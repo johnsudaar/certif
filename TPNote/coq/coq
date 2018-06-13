@@ -1,0 +1,214 @@
+Require Export ZArith.
+Require Export String.
+Require Export List.
+Require Export Omega.
+
+Open Scope Z_scope.
+
+Inductive aexpr: Type := 
+  Avar : string -> aexpr
+| Anum : Z -> aexpr
+| Aplus : aexpr -> aexpr -> aexpr
+| Aminus : aexpr -> aexpr -> aexpr
+| Amult : aexpr -> aexpr -> aexpr
+.
+
+Definition e1 : aexpr := (Aplus (Aplus (Avar "x") (Anum 3)) (Avar "y")).
+
+Inductive bexpr: Type :=
+  Beq  : aexpr -> aexpr -> bexpr
+| Blt  : aexpr -> aexpr -> bexpr
+| Bgt  : aexpr -> aexpr -> bexpr
+| Band : bexpr -> bexpr -> bexpr
+.
+Definition b1 : bexpr := (Blt (Anum 5) (Aplus (Avar "x") (Anum 3))).
+
+Inductive instr : Type :=
+  Seq: instr -> instr -> instr
+| While: bexpr -> instr -> instr
+| If: bexpr -> instr -> instr -> instr
+| Assign: string -> aexpr -> instr
+| skip: instr
+.
+
+Inductive assert : Type :=
+  Hbexpr: bexpr -> assert (*Constructeur*)
+| Hconj: assert -> assert -> assert (*Et*)
+| Himpl: assert -> assert -> assert (*Implique*)
+| Hneg: assert -> assert (*Non*)
+.
+
+Fixpoint asubst (a : aexpr) (v : string) (a' : aexpr) :=
+match a with
+| Anum _ => a
+| Avar vp => if string_dec v vp then a' else a
+| Aplus e1 e2 => (Aplus (asubst e1 v a') (asubst e2 v a'))
+| Aminus e1 e2 => (Aminus (asubst e1 v a') (asubst e2 v a'))
+| Amult e1 e2 => (Amult (asubst e1 v a') (asubst e2 v a'))
+end
+.
+
+Fixpoint bsubst (b : bexpr) (v: string) (b' : aexpr) :=
+match b with
+| Beq  a1 a2 => (Beq  (asubst a1 v b') (asubst a2 v b'))
+| Blt  a1 a2 => (Blt  (asubst a1 v b') (asubst a2 v b'))
+| Bgt  a1 a2 => (Bgt  (asubst a1 v b') (asubst a2 v b'))
+| Band b1 b2 => (Band (bsubst b1 v b') (bsubst b2 v b'))
+end
+.
+
+Fixpoint hsubst (a: assert) (v: string) (a': aexpr) :=
+match a with
+| Hbexpr b1 => (Hbexpr (bsubst b1 v a'))
+| Hconj a1 a2 => (Hconj (hsubst a1 v a') (hsubst a2 v a'))
+| Himpl a1 a2 => (Himpl (hsubst a1 v a') (hsubst a2 v a'))
+| Hneg a1 => (Hneg (hsubst a1 v a'))
+end
+.
+
+Fixpoint Zeval (g: string->Z) (a: aexpr) :=
+match a with
+| Anum n => n
+| Avar vp => (g vp)
+| Aplus e1 e2 => (Zeval g e1) + (Zeval g e2)
+| Aminus e1 e2 => (Zeval g e1) - (Zeval g e2)
+| Amult e1 e2 => (Zeval g e1) * (Zeval g e2)
+end
+.
+
+Fixpoint Zbeval (g: string -> Z) (a: bexpr) :=
+match a with
+| Beq  a1 a2 => (Zeval g a1) = (Zeval g a2)
+| Blt  a1 a2 => (Zeval g a1) < (Zeval g a2)
+| Bgt  a1 a2 => (Zeval g a1) > (Zeval g a2)
+| Band b1 b2 => (Zbeval g b1) /\ (Zbeval g b2)
+end
+.
+
+Fixpoint Heval (g: string -> Z) (a: assert) :=
+match a with
+| Hbexpr b1 => (Zbeval g b1)
+| Hconj h1 h2 => (Heval g h1) /\ (Heval g h2)
+| Himpl h1 h2 => (Heval g h1) -> (Heval g h2)
+| Hneg h1 => (not (Heval g h1))
+end
+.
+
+Definition valid p := forall g : string->Z, (Heval g p).
+
+Inductive LHoare : assert -> instr -> assert -> Prop :=
+| H_skip: forall p:assert, (LHoare p skip p)
+| H_seq: forall p q r:assert, forall c1 c2: instr,
+  (LHoare p c1 r) ->
+  (LHoare r c2 q) ->
+  (LHoare p (Seq c1 c2) q)
+| H_assign: forall p:assert, forall x:string, forall E:aexpr,
+  (LHoare (hsubst p x E) (Assign x E) p)
+| H_cond: forall p q:assert, forall b:bexpr, forall s t: instr,
+  (LHoare (Hconj (Hbexpr b) p) s q) ->
+  (LHoare (Hconj (Hneg (Hbexpr b)) p) t q)->
+  (LHoare p (If b s t) q)
+| H_while: forall p: assert, forall b: bexpr, forall c:instr,
+  (LHoare (Hconj p (Hbexpr b)) c p) -> 
+  (LHoare p (While b c) (Hconj p (Hneg (Hbexpr b))))
+| H_cons: forall p p' q q': assert, forall s:instr,
+  valid (Himpl p' p) -> (LHoare p s q) -> valid (Himpl q q') ->
+  (LHoare p' s q')
+.
+
+Definition x_plus_un := (Aplus (Avar "x") (Anum 1)).
+Definition x_sup_zero := Hbexpr (Blt (Anum 0) (Avar "x")).
+Definition x_sup_un := Hbexpr (Blt (Anum 1) (Avar "x")).
+
+Lemma toto : (LHoare x_sup_zero (Assign "x" x_plus_un) x_sup_un).
+Proof.
+eapply H_cons with (q := x_sup_un) (p:= hsubst x_sup_un "x" x_plus_un).
+- unfold valid.
+simpl.
+intros.
+omega.
+- apply H_assign.
+- unfold valid.
+simpl.
+intros.
+omega.
+Qed.
+
+(* Question 2*)
+
+Definition q2 := (If (Band (Bgt (Avar "x") (Anum 1)) (Blt (Avar "x") (Anum 3))) (Assign "x" (Aplus (Amult (Anum 2) (Avar "x")) (Anum 1))) (Assign "x" (Amult (Anum 2) (Avar "x")))).
+
+(* Question 2
+
+On a :
+
+{x = 2} if (x < 1 && x > 3) x = 2*x+1 else x = 2*x {x=5}
+
+En utilisant la règle Cond on a:
+(1) {(x < 1  && x > 3) && x = 2} x = 2*x+1 {x=5}
+(2) {!(x < 1 && x > 3) && x = 2} x = 2*x {x=5}
+
+Commencons par le (1)
+En appliquant la règle cons on a :
+(1.1) (x < 1 && x > 3) && x = 2 ==> 2*x + 1 = 5
+(1.2) {2*x + 1 = 5} x = 2*x + 1 {x = 5}
+(1.3) (x = 5 ==> x = 5)
+La 1.1 est vrai car (x < 1 && x > 3) && x = 2 implique que x = 2 et donc 2*x+1 = 5
+La 1.3 est vrai.
+
+Pour la 1.2 nous pouvons appliquer la règle Affectation.
+
+Pour le (2)
+En appliquant la règle cons on a :
+(2.1) !(x < 1 && x > 3) && x = 2 ==> 2*x=5
+(2.2) {2*x=5} x = 2*x {x=5}
+(2.3) x=5 ==> x = 5
+
+La 2.1 est vrai car !(x<1 && x>3) && x=2 est faux.
+La 2.3 est vrai.
+
+Pour la 2.2 nous pouvons appliquer la règle Affectation.
+*)
+
+(* Question 4*)
+
+Definition x_eq_deux := (Hbexpr (Beq (Avar "x") (Anum 1))).
+Definition x_eq_cinq := (Hbexpr (Beq (Avar "x") (Anum 5))).
+Definition deux_x_plus_un := (Aplus (Amult (Anum 2) (Avar "x")) (Anum 1)).
+
+Lemma q4: (LHoare x_eq_deux q2 x_eq_cinq).
+Proof.
+apply H_cond.
+eapply H_cons with (q:= x_eq_cinq) (p:= (hsubst x_eq_cinq "x" deux_x_plus_un)).
+unfold valid.
+simpl.
+intros.
+omega.
+apply H_assign.
+unfold valid.
+simpl.
+intros.
+omega.
+apply H_cons with (q:= x_eq_cinq) (p:= (hsubst x_eq_cinq "x" (Amult (Anum 2) (Avar "x")))).
+Focus 2.
+apply H_assign.
+Focus 2.
+unfold valid.
+simpl.
+intros.
+omega.
+unfold valid.
+(* Je ne comprends pas le comprtement du simpl ici: il transforme:
+ ! (x > 1 && x < 3) && x == 2
+ce qui est faux.
+*)
+simpl.
+(* en
+! (x > 1 && x < 3) && x == 1
+Ce qui est vrai.
+Du coup nous ne pouvons pas prouver que p => p' en utilisant faux => tout
+*)
+
+
+
+
